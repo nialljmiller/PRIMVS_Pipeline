@@ -4,15 +4,6 @@
 
 A clean, portable, and elegantly coded pipeline for constructing the PRIMVS variable star catalogue from VIRAC infrared time-series data.
 
-## Features
-
-- ✅ **Portable**: No hardcoded paths - runs anywhere
-- ✅ **Modular**: Clean separation of concerns
-- ✅ **Configurable**: YAML-based configuration system
-- ✅ **Documented**: Comprehensive docstrings and examples
-- ✅ **Tested**: Unit tests for critical components
-- ✅ **Performant**: Optimized parallel processing
-
 ## Installation
 
 ```bash
@@ -111,6 +102,5 @@ If you use this pipeline in your research, please cite:
 ## Contact
 
 - **Author**: Niall Miller
-- **Email**: [your-email]
 - **GitHub**: [@nialljmiller](https://github.com/nialljmiller)
 
