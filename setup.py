@@ -59,4 +59,3 @@ setup(
         "primvs_pipeline": ["config/*.yaml"],
     },
 )
-
