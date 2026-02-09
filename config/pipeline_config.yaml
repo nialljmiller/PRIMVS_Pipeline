@@ -1,0 +1,138 @@
+# PRIMVS Pipeline Configuration
+# All paths support environment variable expansion using ${VAR_NAME} syntax
+
+# Data paths configuration
+data:
+  # VIRAC database paths - set these environment variables or edit directly
+  virac_meta_dir: ${VIRAC_ROOT}/data/output/agg_tables/
+  virac_lc_dir: ${VIRAC_ROOT}/data/output/ts_tables/
+  
+  # Output directory for results
+  output_dir: ./output
+  
+  # Directory containing pre-trained models
+  models_dir: ./models
+  
+  # Model file paths (relative to models_dir)
+  fap_model_path: fap_nn/final_12l_dp_all
+
+# Processing parameters
+processing:
+  # Number of parallel processes (set to -1 to use all available cores)
+  n_processes: 16
+  
+  # Chunk size for batch processing
+  chunk_size: 1000
+  
+  # Enable caching of intermediate results
+  use_cache: true
+  
+  # Cache directory
+  cache_dir: ./cache
+
+# Quality filters
+quality_filters:
+  # Minimum number of observations required
+  min_observations: 40
+  
+  # Maximum chi-squared value
+  max_chi: 10.0
+  
+  # Maximum astrometric residual chi-squared
+  max_ast_res_chisq: 20.0
+  
+  # Maximum magnitude error (in units of sigma)
+  max_magerr_sigma: 4.0
+  
+  # Require positive magnitudes
+  require_positive_mag: true
+  
+  # Require positive magnitude errors
+  require_positive_magerr: true
+
+# Feature calculation parameters
+features:
+  # Statistical features to calculate
+  calculate:
+    - cody_M
+    - stetson_K
+    - eta
+    - eta_e
+    - median_BRP
+    - range_cum_sum
+    - max_slope
+    - MAD
+    - mean_variance
+    - percent_amplitude
+    - true_amplitude
+    - roms
+    - p_to_p_var
+    - lag_autocorr
+    - anderson_darling
+    - std_nxs
+    - weighted_moments
+    - basic_moments
+  
+  # Periodogram methods to run
+  periodogram_methods:
+    - lomb_scargle
+    - pdm
+    - conditional_entropy
+    - gaussian_process
+  
+  # Number of quantiles to calculate for periodograms
+  periodogram_quantiles:
+    - 0.001
+    - 0.01
+    - 0.1
+    - 0.25
+    - 0.5
+    - 0.75
+    - 0.99
+    - 0.999
+    - 0.9999
+
+# False Alarm Probability (FAP) parameters
+fap:
+  # FAP threshold for catalogue inclusion
+  threshold: 0.2
+  
+  # Number of data points for neural network input
+  n_points: 200
+  
+  # KNN regressor parameters
+  knn_neighbors: 10
+  knn_weights: distance
+  
+  # Model architecture (for reference)
+  model_type: GRU
+  model_layers: 12
+  model_nodes: 1024
+
+# Aggregation parameters
+aggregation:
+  # How to handle duplicate source IDs
+  duplicate_strategy: lowest_fap  # Options: lowest_fap, highest_amplitude, first, last
+  
+  # Output file formats
+  output_formats:
+    - fits
+    - csv
+  
+  # Catalogue name
+  catalogue_name: PRIMVS
+
+# Logging configuration
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: INFO
+  
+  # Log to file
+  log_to_file: true
+  
+  # Log file path
+  log_file: ./logs/primvs_pipeline.log
+  
+  # Log format
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
