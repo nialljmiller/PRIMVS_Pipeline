@@ -5,6 +5,11 @@ pandas>=1.3.0
 astropy>=5.0.0
 pyyaml>=6.0
 
+# StochiStats — time-series statistics & period-finding
+# Install from GitHub:  pip install git+https://github.com/nialljmiller/StochiStats.git
+# Or locally:           pip install -e /path/to/StochiStats
+stochistats>=0.2.0
+
 # Machine learning
 tensorflow>=2.10.0
 scikit-learn>=1.0.0
@@ -18,4 +23,3 @@ h5py>=3.6.0
 
 # Parallel processing
 joblib>=1.1.0
-
