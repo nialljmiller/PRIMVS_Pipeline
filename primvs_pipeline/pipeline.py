@@ -22,7 +22,9 @@ from .data_access import ViracInterface, save_catalogue
 from .preprocessing import QualityFilter
 from .features import FeatureCalculator
 from .fap import NeuralNetworkFAP
-from .utils import parallel_process, get_logger
+from .utils import parallel_process
+from .utils.logging_config import get_logger
+
 
 logger = get_logger(__name__)
 
