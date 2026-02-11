@@ -15,15 +15,34 @@ def download_missing_file(source_id):
     
     remote_path = f"{REMOTE_HOST}:{REMOTE_BASE}{relative_path}"
     local_path = f"{LOCAL_BASE}{subdir1}/{subdir2}/"
+
     
-    # Create local directory if needed
-    subprocess.run(["mkdir", "-p", local_path], check=True)
+    # 1. Identify missing paths
+    missing_paths = []
+    for sid in source_ids:
+        if not cat.source_exists(sid):
+            s = str(int(sid))
+            missing_paths.append(f"{s[:3]}/{s[3:6]}/{s}.csv")
     
-    # Download the file
-    cmd = ["rsync", "-avhP", remote_path, local_path]
-    print(f"Downloading {source_id}...")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # 2. Write manifest
+    manifest_path = "transfer_list.txt"
+    with open(manifest_path, "w") as f:
+        f.write("\n".join(missing_paths))
     
+    # 3. Execute bulk rsync
+    if missing_paths:
+        print(f"Requesting {len(missing_paths)} files via rsync...")
+        try:
+            subprocess.run([
+                "rsync", "-avhP", 
+                "--files-from=" + manifest_path,
+                f"{REMOTE_HOST}:{REMOTE_BASE}", 
+                LOCAL_BASE
+            ], check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Rsync failed: {e}")
+
+
     if result.returncode == 0:
         print(f"✓ Downloaded {source_id}")
         return True
