@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
+#import seaborn as sns
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -113,7 +113,7 @@ class PrimvsCatalog:
             return
 
         plt.figure(figsize=(10, 6))
-        sns.set_style("whitegrid")
+        #sns.set_style("whitegrid")
 
         colors = {'Ks': 'r', 'Z': 'b', 'Y': 'g', 'J': 'orange', 'H': 'brown'}
 
