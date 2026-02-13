@@ -1,5 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=primvs_reprocess
+#SBATCH --account=galacticbulge
 #SBATCH --partition=compute
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
