@@ -32,4 +32,7 @@ python process_catalog_chunk.py \
     --start "$START_IDX" \
     --count "$CHUNK_SIZE" \
     --output "primvs_chunk_${SLURM_ARRAY_TASK_ID}" \
-    --n-processes 1#"$SLURM_CPUS_PER_TASK"
+    --n-processes 1
+    
+    
+#"$SLURM_CPUS_PER_TASK"
