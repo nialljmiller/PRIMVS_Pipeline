@@ -27,7 +27,7 @@ CHUNK_SIZE=10000  # Number of sources per job array task
 START_IDX=$((SLURM_ARRAY_TASK_ID * CHUNK_SIZE))
 
 # Run the batch processing script
-python scripts/process_catalog_chunk.py \
+python process_catalog_chunk.py \
     --fits "$CATALOG_FITS" \
     --start "$START_IDX" \
     --count "$CHUNK_SIZE" \
