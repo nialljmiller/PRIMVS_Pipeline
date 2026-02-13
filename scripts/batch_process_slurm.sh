@@ -14,7 +14,7 @@
 module load python/3.10
 
 # Activate virtual environment
-source venv/bin/activate
+source ~/python_projects/venv/bin/activate
 
 # Set environment variables
 export VIRAC_ROOT="/project/galacticbulge/PRIMVS"
