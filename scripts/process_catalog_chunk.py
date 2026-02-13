@@ -11,7 +11,7 @@ def main():
     parser.add_argument("--count", type=int, default=1000, help="Number of sources to process")
     parser.add_argument("--output", type=str, required=True, help="Output filename base")
     parser.add_argument("--n-processes", type=int, default=-1, help="Number of parallel processes")
-    parser.add_argument("--config", type=str, default="config/pipeline_config.yaml", help="Path to config file")
+    parser.add_argument("--config", type=str, default="../config/pipeline_config.yaml", help="Path to config file")
     
     args = parser.parse_args()
     
