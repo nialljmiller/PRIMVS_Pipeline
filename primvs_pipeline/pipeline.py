@@ -24,7 +24,7 @@ Updated: 2026-02-16 — Integrated periodogram analysis
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import Optional, Dict, Any, Union
 import logging
 
 logger = logging.getLogger(__name__)
