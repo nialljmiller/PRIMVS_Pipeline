@@ -1,20 +1,13 @@
 # PRIMVS Pipeline Configuration
 # All paths support environment variable expansion using ${VAR_NAME} syntax
 
-# Data paths configuration
+
 data:
-  # VIRAC database paths - set these environment variables or edit directly
-  virac_meta_dir: ${VIRAC_ROOT}/data/output/agg_tables/
-  virac_lc_dir: ${VIRAC_ROOT}/data/output/ts_tables/
-  
-  # Output directory for results
+  virac_lc_dir: /project/galacticbulge/PRIMVS/light_curves
   output_dir: ./output
   
   # Directory containing pre-trained models
   models_dir: ./models
-  
-  # Model file paths (relative to models_dir)
-  fap_model_path: fap_nn/final_12l_dp_all
 
 # Processing parameters
 processing:
@@ -92,8 +85,10 @@ features:
     - 0.999
     - 0.9999
 
-# False Alarm Probability (FAP) parameters
+
 fap:
+  model_path: /project/galacticbulge/PRIMVS/PRIMVS_Pipeline/models/fap_nn/final_12l_dp_all
+
   # FAP threshold for catalogue inclusion
   threshold: 0.2
   
