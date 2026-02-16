@@ -17,15 +17,21 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 # Import TensorFlow/Keras
 try:
-    from tensorflow.keras.models import model_from_json
+    # Prefer legacy Keras 2 deserializer for old JSON/H5 models
+    try:
+        from tf_keras.models import model_from_json  # type: ignore
+    except Exception:
+        from tensorflow.keras.models import model_from_json  # fallback
+
     from sklearn.neighbors import KNeighborsRegressor
     TENSORFLOW_AVAILABLE = True
 except ImportError:
     logger.warning("TensorFlow not available - FAP calculation will not work")
     TENSORFLOW_AVAILABLE = False
-
+    
 # Import phasing utility
 from ..utils.phasing import phaser
 
