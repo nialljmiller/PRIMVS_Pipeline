@@ -1,5 +1,9 @@
 import argparse
 import os
+
+# Force CPU-only TF before anything imports TensorFlow
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
+
 from pathlib import Path
 from astropy.table import Table
 from primvs_pipeline import Pipeline, load_config
