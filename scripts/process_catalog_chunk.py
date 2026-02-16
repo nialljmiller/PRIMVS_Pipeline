@@ -16,6 +16,10 @@ def main():
     parser.add_argument("--output", type=str, required=True, help="Output filename base")
     parser.add_argument("--n-processes", type=int, default=-1, help="Number of parallel processes")
     parser.add_argument("--config", type=str, default="../config/pipeline_config.yaml", help="Path to config file")
+    parser.add_argument("--recompute-periods", action="store_true", default=True,
+                        help="Recompute periods from scratch (default: True)")
+    parser.add_argument("--use-existing-periods", action="store_true", default=False,
+                        help="Use existing periods from the FITS table instead of recomputing")
     
     args = parser.parse_args()
     
@@ -35,10 +39,20 @@ def main():
     chunk_tbl = tbl[args.start:end_idx]
     
     source_ids = chunk_tbl['sourceid'].data.tolist()
-    # Periods might be available in the catalog; if so, extract them
+    
+    # Handle periods
     periods = None
-    if 'period' in chunk_tbl.colnames:
-        periods = chunk_tbl['period'].data.tolist()
+    if args.use_existing_periods and not args.recompute_periods:
+        # Try to extract existing periods from the FITS table
+        for period_col in ['true_period', 'period', 'ls_period1']:
+            if period_col in chunk_tbl.colnames:
+                periods = chunk_tbl[period_col].data.tolist()
+                print(f"Using existing periods from column '{period_col}'")
+                break
+        if periods is None:
+            print("No period column found in FITS table, will compute from scratch")
+    else:
+        print("Computing periods from scratch using LS, PDM, CE, GP periodograms")
     
     print(f"Processing {len(source_ids)} sources (indices {args.start} to {end_idx-1})...")
     
