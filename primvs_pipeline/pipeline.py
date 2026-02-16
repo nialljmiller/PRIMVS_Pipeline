@@ -27,6 +27,9 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any
 import logging
 
+logger = logging.getLogger(__name__)
+
+
 from .config import load_config, get_data_paths, get_processing_params
 from .data_access import ViracInterface, save_catalogue
 from .preprocessing import QualityFilter
@@ -54,6 +57,137 @@ DEFAULT_N_FREQS = 100_000
 DEFAULT_F_STOP = 10.0
 DEFAULT_N_PEAKS = 2
 DEFAULT_FAP_THRESHOLD = 0.2
+
+
+
+
+
+def generate_primvs_id(sourceid: Union[int, str],
+                       true_period: float,
+                       best_fap: float) -> int:
+    """
+    Generate a PRIMVS unique ID from source ID, period, and FAP.
+
+    Replicates file_aggrigator.py line 189:
+        sourceid_str[:-2] + period*1000 (zero-padded 3) + fap*100 (zero-padded 2)
+
+    Parameters
+    ----------
+    sourceid : int or str
+        VIRAC source identifier.
+    true_period : float
+        Best-fit period in days.
+    best_fap : float
+        Best false alarm probability (0-1).
+
+    Returns
+    -------
+    int
+        PRIMVS unique identifier.
+    """
+    sourceid_str = str(int(sourceid))
+    sourceid_trimmed = sourceid_str[:-2]
+    period_code = '{:0>3d}'.format(int(true_period * 1000))
+    fap_code = '{:0>2d}'.format(int(best_fap * 100))
+    return int(sourceid_trimmed + period_code + fap_code)
+
+
+def generate_period_id(true_period: float) -> int:
+    """
+    Generate a period ID encoding the period value.
+
+    Replicates file_aggrigator.py line 185:
+        int('{:0>8d}'.format(int(period * 100000)))
+
+    Parameters
+    ----------
+    true_period : float
+        Best-fit period in days.
+
+    Returns
+    -------
+    int
+        Period identifier.
+    """
+    return int('{:0>8d}'.format(int(true_period * 100000)))
+
+
+def add_primvs_ids_to_result(result: Dict) -> Dict:
+    """
+    Add primvs_id and period_id to a single pipeline result dict.
+
+    Call this at the end of Pipeline.process_source() so IDs are
+    generated in-situ rather than as a post-processing step.
+
+    Parameters
+    ----------
+    result : dict
+        Pipeline result containing 'sourceid', 'true_period', 'best_fap'.
+
+    Returns
+    -------
+    dict
+        Same dict with 'primvs_id' and 'period_id' added.
+    """
+    sourceid = result.get('sourceid')
+    true_period = float(result.get('true_period', 0.0) or 0.0)
+    best_fap = float(result.get('best_fap', 1.0) or 1.0)
+
+    if sourceid is None:
+        logger.warning("Cannot generate PRIMVS ID: sourceid is None")
+        return result
+
+    result['primvs_id'] = generate_primvs_id(sourceid, true_period, best_fap)
+    result['period_id'] = generate_period_id(true_period)
+    return result
+
+
+def add_primvs_ids_to_catalogue(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add primvs_id and period_id columns to a catalogue DataFrame.
+
+    Replicates the full file_aggrigator.py logic (lines 185-197):
+    generates the IDs, casts types, and reorders columns so
+    primvs_id and sourceid come first.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Catalogue with 'sourceid', 'true_period', 'best_fap' columns.
+
+    Returns
+    -------
+    pd.DataFrame
+        Catalogue with 'primvs_id', 'sourceid', 'period_id' as first columns.
+    """
+    df = df.copy()
+
+    df['period_id'] = df['true_period'].apply(
+        lambda p: int('{:0>8d}'.format(int(float(p) * 100000)))
+    )
+
+    df['primvs_id'] = (
+        df['sourceid'].astype(str).str[:-2]
+        + df['true_period'].apply(
+            lambda p: '{:0>3d}'.format(int(float(p) * 1000))
+        ).astype(str)
+        + df['best_fap'].apply(
+            lambda f: '{:0>2d}'.format(int(float(f) * 100))
+        ).astype(str)
+    )
+
+    df['primvs_id'] = df['primvs_id'].astype(int)
+    df['sourceid'] = df['sourceid'].astype(int)
+    df['period_id'] = df['period_id'].astype(int)
+
+    # Reorder: primvs_id, sourceid, period_id first
+    id_cols = ['primvs_id', 'sourceid', 'period_id']
+    other_cols = [c for c in df.columns if c not in id_cols]
+    df = df[id_cols + other_cols]
+
+    logger.info(f"Generated PRIMVS IDs for {len(df)} rows")
+    return df
+
 
 
 class Pipeline:
@@ -376,7 +510,14 @@ class Pipeline:
 
             logger.debug(f"Source {source_id}: period={features.get('true_period', 'N/A')}, "
                          f"FAP={features.get('best_fap', 'N/A')}")
+
+
+            add_primvs_ids_to_result(period_results)
+
             return features
+
+
+
 
         except FileNotFoundError:
             logger.debug(f"Lightcurve file not found for source {source_id}")
