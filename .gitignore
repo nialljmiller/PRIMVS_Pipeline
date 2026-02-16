@@ -68,3 +68,6 @@ models/
 config/local_config.yaml
 config/my_config.yaml
 
+
+# NFS temp files
+.nfs*
