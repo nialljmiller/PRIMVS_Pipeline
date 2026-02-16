@@ -71,3 +71,6 @@ config/my_config.yaml
 
 # NFS temp files
 .nfs*
+
+# Local transfer lists (generated)
+transfer_list*.txt
