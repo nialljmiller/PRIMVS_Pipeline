@@ -5,17 +5,24 @@ Each source is written to the output CSV immediately upon completion,
 matching the original PRIMVS pipeline behavior (PRIMVS_file.py).
 This ensures partial results are saved even if the job is killed.
 
-Output columns match the original PRIMVS col_names exactly.
-The 'name' column is the VIRAC sourceid (matching original behavior).
+Output columns match PRIMVS_FULL.fits exactly (102 columns):
+    uniqueid, sourceid, mag_n, ..., Cody_Q_gp
+
+The uniqueid (PRIMVS ID) is generated in-situ using the same formula
+as file_aggrigator.py:
+    str(sourceid)[:-2] + period*1000 (3-digit) + fap*100 (2-digit)
+
+At completion, the CSV is also written as a FITS file.
 """
 import argparse
 import csv
 import os
 import sys
 import numpy as np
+import pandas as pd
 from pathlib import Path
-from threading import Lock
 from astropy.table import Table
+
 from primvs_pipeline.config import load_config, get_data_paths, get_processing_params
 from primvs_pipeline.data_access import ViracInterface
 from primvs_pipeline.preprocessing import QualityFilter
@@ -45,10 +52,30 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Exact PRIMVS column order (from PRIMVS_file.py / PRIMVS_fileagg_brute.py)
+# PRIMVS ID generation (from file_aggrigator.py line 189)
+# ---------------------------------------------------------------------------
+
+def generate_primvs_id(sourceid, true_period, best_fap):
+    """
+    Generate PRIMVS unique ID.
+
+    Formula (file_aggrigator.py):
+        str(sourceid)[:-2] + '{:0>3d}'.format(int(period * 1000))
+                            + '{:0>2d}'.format(int(fap * 100))
+    """
+    sourceid_str = str(int(sourceid))
+    sourceid_trimmed = sourceid_str[:-2]
+    period_code = '{:0>3d}'.format(int(float(true_period) * 1000))
+    fap_code = '{:0>2d}'.format(int(float(best_fap) * 100))
+    return int(sourceid_trimmed + period_code + fap_code)
+
+
+# ---------------------------------------------------------------------------
+# Column order — matches PRIMVS_FULL.fits exactly (102 columns)
 # ---------------------------------------------------------------------------
 COL_NAMES = [
-    'name', 'mag_n', 'mag_avg', 'magerr_avg',
+    'uniqueid', 'sourceid',
+    'mag_n', 'mag_avg', 'magerr_avg',
     'Cody_M', 'stet_k', 'eta', 'eta_e', 'med_BRP',
     'range_cum_sum', 'max_slope', 'MAD', 'mean_var',
     'percent_amp', 'true_amplitude', 'roms', 'p_to_p_var',
@@ -78,14 +105,15 @@ COL_NAMES = [
     'gp_lnlike', 'gp_b', 'gp_c', 'gp_p', 'gp_fap', 'Cody_Q_gp',
 ]
 
-QUANTILES = [0.001, 0.01, 0.1, 0.25, 0.5, 0.75, 0.99, 0.999, 0.9999]
+assert len(COL_NAMES) == 102, f"Expected 102 columns, got {len(COL_NAMES)}"
 
+QUANTILES = [0.001, 0.01, 0.1, 0.25, 0.5, 0.75, 0.99, 0.999, 0.9999]
 N_FREQS = 100_000
-N_PEAKS = 3  # top 3 peaks: best + 2 secondaries
+N_PEAKS = 3
 
 
 # ---------------------------------------------------------------------------
-# Periodogram runners — each returns a flat dict keyed by PRIMVS col names
+# Periodogram runners
 # ---------------------------------------------------------------------------
 
 def _quantiles(power):
@@ -100,11 +128,10 @@ def run_ls(mag, magerr, time):
         peaks = extract_peaks(freqs_c, power_c, n_peaks=N_PEAKS, minimize=False)
         qs = _quantiles(power)
         for i, pk in enumerate(peaks[:3]):
-            suffix = '' if i == 0 else str(i)
             key_p = 'ls_p' if i == 0 else f'ls_period{i}'
-            r[key_p]                              = pk['period']
-            r[f'ls_y_y_{i}']                      = pk['power']
-            r[f'ls_peak_width_{i}']               = pk['width']
+            r[key_p]                 = pk['period']
+            r[f'ls_y_y_{i}']        = pk['power']
+            r[f'ls_peak_width_{i}'] = pk['width']
         for i, qn in enumerate(['ls_q001','ls_q01','ls_q1','ls_q25','ls_q50','ls_q75','ls_q99','ls_q999','ls_q9999']):
             r[qn] = qs[i]
     except Exception as e:
@@ -121,9 +148,9 @@ def run_pdm(mag, magerr, time):
         qs = _quantiles(theta)
         for i, pk in enumerate(peaks[:3]):
             key_p = 'pdm_p' if i == 0 else f'pdm_period{i}'
-            r[key_p]                              = pk['period']
-            r[f'pdm_y_y_{i}']                     = pk['power']
-            r[f'pdm_peak_width_{i}']              = pk['width']
+            r[key_p]                  = pk['period']
+            r[f'pdm_y_y_{i}']        = pk['power']
+            r[f'pdm_peak_width_{i}'] = pk['width']
         for i, qn in enumerate(['pdm_q001','pdm_q01','pdm_q1','pdm_q25','pdm_q50','pdm_q75','pdm_q99','pdm_q999','pdm_q9999']):
             r[qn] = qs[i]
     except Exception as e:
@@ -140,9 +167,9 @@ def run_ce(mag, magerr, time):
         qs = _quantiles(entropy)
         for i, pk in enumerate(peaks[:3]):
             key_p = 'ce_p' if i == 0 else f'ce_period{i}'
-            r[key_p]                              = pk['period']
-            r[f'ce_y_y_{i}']                      = pk['power']
-            r[f'ce_peak_width_{i}']               = pk['width']
+            r[key_p]                 = pk['period']
+            r[f'ce_y_y_{i}']        = pk['power']
+            r[f'ce_peak_width_{i}'] = pk['width']
         for i, qn in enumerate(['ce_q001','ce_q01','ce_q1','ce_q25','ce_q50','ce_q75','ce_q99','ce_q999','ce_q9999']):
             r[qn] = qs[i]
     except Exception as e:
@@ -164,13 +191,12 @@ def run_gp(mag, magerr, time):
 
 
 # ---------------------------------------------------------------------------
-# FAP + best period selection (matches original PRIMVS logic)
+# FAP + best period selection
 # ---------------------------------------------------------------------------
 
 def compute_fap_and_select_best(row, fap_calc, mag, time):
     """
-    Compute per-method FAP and Cody_Q, then pick the method with lowest FAP
-    as true_period / best_fap / best_method.
+    Compute per-method FAP and Cody_Q, pick method with lowest FAP.
     """
     method_period_keys = {
         'ls':  'ls_p',
@@ -190,7 +216,6 @@ def compute_fap_and_select_best(row, fap_calc, mag, time):
             row[f'Cody_Q_{method}'] = np.nan
             continue
 
-        # FAP
         fap = np.nan
         if fap_calc is not None:
             try:
@@ -199,7 +224,6 @@ def compute_fap_and_select_best(row, fap_calc, mag, time):
                 pass
         row[f'{method}_fap'] = fap
 
-        # Cody Q at this period
         if CODY_Q_AVAILABLE:
             try:
                 phase = phaser(time, period)
@@ -209,13 +233,12 @@ def compute_fap_and_select_best(row, fap_calc, mag, time):
         else:
             row[f'Cody_Q_{method}'] = np.nan
 
-        # Track best
         if not np.isnan(fap) and (np.isnan(best_fap) or fap < best_fap):
             best_fap = fap
             best_period = period
             best_method = method
 
-    # If no FAP calc available, fall back to LS period
+    # Fallback if no FAP available
     if np.isnan(best_period):
         for pkey in ['ls_p', 'pdm_p', 'ce_p', 'gp_p']:
             p = row.get(pkey, np.nan)
@@ -224,18 +247,18 @@ def compute_fap_and_select_best(row, fap_calc, mag, time):
                 best_method = pkey.split('_')[0]
                 break
 
-    row['ls_bal_fap'] = row.get('ls_fap', np.nan)
-    row['true_period'] = best_period
-    row['best_fap'] = best_fap
-    row['best_method'] = best_method
-    row['true_class'] = ''      # classification is a separate step
-    row['trans_flag'] = 0
+    row['ls_bal_fap']   = row.get('ls_fap', np.nan)
+    row['true_period']  = best_period
+    row['best_fap']     = best_fap
+    row['best_method']  = best_method
+    row['true_class']   = ''
+    row['trans_flag']    = 0.0
 
     return row
 
 
 # ---------------------------------------------------------------------------
-# Single-source processing (full PRIMVS pipeline per star)
+# Single-source processing
 # ---------------------------------------------------------------------------
 
 def process_single_source(source_id, virac, quality_filter, feature_calc, fap_calc, min_obs=40):
@@ -244,10 +267,11 @@ def process_single_source(source_id, virac, quality_filter, feature_calc, fap_ca
     Returns a dict keyed by COL_NAMES, or None on failure.
     """
     row = {c: np.nan for c in COL_NAMES}
-    row['name'] = source_id          # PRIMVS 'name' = VIRAC sourceid
+    row['sourceid'] = int(source_id)
+    row['uniqueid'] = 0              # placeholder, set after FAP
     row['true_class'] = ''
     row['best_method'] = ''
-    row['trans_flag'] = 0
+    row['trans_flag'] = 0.0
 
     try:
         # 1. Load lightcurve
@@ -255,9 +279,9 @@ def process_single_source(source_id, virac, quality_filter, feature_calc, fap_ca
 
         # 2. Quality filter
         flc = quality_filter.apply(lc)
-        mag   = flc['mag']
+        mag    = flc['mag']
         magerr = flc['magerr']
-        time  = flc['time']
+        time   = flc['time']
 
         if len(mag) < min_obs:
             return None
@@ -283,6 +307,15 @@ def process_single_source(source_id, virac, quality_filter, feature_calc, fap_ca
         # 5. FAP + best period
         row = compute_fap_and_select_best(row, fap_calc, mag, time)
 
+        # 6. Generate PRIMVS ID (uniqueid)
+        true_period = row.get('true_period', 0.0)
+        best_fap    = row.get('best_fap', 1.0)
+        if np.isnan(true_period):
+            true_period = 0.0
+        if np.isnan(best_fap):
+            best_fap = 1.0
+        row['uniqueid'] = generate_primvs_id(source_id, true_period, best_fap)
+
         return row
 
     except FileNotFoundError:
@@ -293,17 +326,65 @@ def process_single_source(source_id, virac, quality_filter, feature_calc, fap_ca
 
 
 # ---------------------------------------------------------------------------
-# Main — sequential processing with immediate CSV append per source
+# CSV to FITS conversion
+# ---------------------------------------------------------------------------
+
+def csv_to_fits(csv_path, fits_path):
+    """
+    Read the completed CSV and write it as a FITS binary table,
+    matching PRIMVS_FULL.fits format (int64 for IDs, float64 for numerics,
+    64A for strings).
+    """
+    df = pd.read_csv(csv_path)
+
+    # Type casting to match PRIMVS_FULL.fits
+    int_cols = ['uniqueid', 'sourceid']
+    str_cols = ['true_class', 'best_method']
+
+    for c in int_cols:
+        if c in df.columns:
+            df[c] = df[c].astype(np.int64)
+
+    for c in str_cols:
+        if c in df.columns:
+            df[c] = df[c].fillna('').astype(str)
+
+    # Everything else is float64
+    for c in df.columns:
+        if c not in int_cols and c not in str_cols:
+            df[c] = pd.to_numeric(df[c], errors='coerce').astype(np.float64)
+
+    # Ensure column order matches COL_NAMES
+    for c in COL_NAMES:
+        if c not in df.columns:
+            if c in str_cols:
+                df[c] = ''
+            elif c in int_cols:
+                df[c] = 0
+            else:
+                df[c] = np.nan
+    df = df[COL_NAMES]
+
+    t = Table.from_pandas(df)
+    t.write(fits_path, overwrite=True)
+    print(f"FITS written: {fits_path} ({len(t)} rows)")
+
+
+# ---------------------------------------------------------------------------
+# Main
 # ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Process a chunk of the PRIMVS catalog")
-    parser.add_argument("--fits", type=str, required=True, help="Path to the catalog FITS file")
-    parser.add_argument("--start", type=int, default=0, help="Starting index in the FITS table")
-    parser.add_argument("--count", type=int, default=1000, help="Number of sources to process")
-    parser.add_argument("--output", type=str, required=True, help="Output CSV file path (inside output/)")
+    parser.add_argument("--fits", type=str, required=True,
+                        help="Path to the input catalog FITS file (with sourceid column)")
+    parser.add_argument("--start", type=int, default=0,
+                        help="Starting index in the FITS table")
+    parser.add_argument("--count", type=int, default=1000,
+                        help="Number of sources to process")
+    parser.add_argument("--output", type=str, required=True,
+                        help="Output name (writes output/<name>.csv and output/<name>.fits)")
     parser.add_argument("--config", type=str, default="../config/pipeline_config.yaml")
-
     args = parser.parse_args()
 
     # --- Config ---
@@ -348,12 +429,15 @@ def main():
     source_ids = chunk['sourceid'].data.tolist()
     print(f"Processing {len(source_ids)} sources (indices {args.start} to {end_idx - 1})...")
 
-    # --- Output CSV path ---
-    output_path = Path('output') / f"{args.output}.csv"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    write_header = not output_path.exists() or output_path.stat().st_size == 0
+    # --- Output paths ---
+    output_dir = Path('output')
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path  = output_dir / f"{args.output}.csv"
+    fits_path = output_dir / f"{args.output}.fits"
 
-    # --- Process sources one at a time, append immediately ---
+    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+
+    # --- Process sources one at a time, append CSV immediately ---
     n_success = 0
     n_total = len(source_ids)
 
@@ -363,7 +447,7 @@ def main():
         if result is not None:
             csv_row = [result.get(c, '') for c in COL_NAMES]
 
-            with open(output_path, 'a', newline='') as f:
+            with open(csv_path, 'a', newline='') as f:
                 writer = csv.writer(f)
                 if write_header:
                     writer.writerow(COL_NAMES)
@@ -375,7 +459,13 @@ def main():
         if (i + 1) % 100 == 0 or (i + 1) == n_total:
             print(f"  Progress: {i + 1}/{n_total} sources, {n_success} successful")
 
-    print(f"\nDone. {n_success}/{n_total} sources written to {output_path}")
+    print(f"\nCSV done: {n_success}/{n_total} sources written to {csv_path}")
+
+    # --- Write FITS from the completed CSV ---
+    if n_success > 0 and csv_path.exists():
+        csv_to_fits(str(csv_path), str(fits_path))
+
+    print("Complete.")
 
 
 if __name__ == "__main__":
