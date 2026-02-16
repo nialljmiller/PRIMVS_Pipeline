@@ -7,7 +7,7 @@ data:
   output_dir: ./output
   
   # Directory containing pre-trained models
-  models_dir: ./models
+  models_dir: /project/galacticbulge/PRIMVS/PRIMVS_Pipeline/models/fap_nn/final_12l_dp_all/
 
 # Processing parameters
 processing:

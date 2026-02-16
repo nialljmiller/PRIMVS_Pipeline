@@ -6,7 +6,7 @@ import pandas as pd
 from astropy.table import Table
 from astropy.io import fits
 from pathlib import Path
-from primvs_api import PrimvsCatalog
+from primvs_pipeline.primvs_api import PrimvsCatalog
 
 def combine_lightcurves_to_fits(input_fits, output_fits, id_column="sourceid", data_dir="/media/bigdata/PRIMVS/light_curves/"):
     """

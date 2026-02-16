@@ -1,10 +1,10 @@
 import subprocess
-from primvs_api import PrimvsCatalog
+from primvs_pipeline.primvs_api import PrimvsCatalog
 
 # Configuration
 REMOTE_HOST = "uhhpc"
 REMOTE_BASE = "/beegfs/car/njm/virac_lightcurves/"
-LOCAL_BASE = "/media/bigdata/PRIMVS/light_curves/"
+LOCAL_BASE = "/project/galacticbulge/PRIMVS/light_curves/"
 
 def download_missing_file(source_id):
     """Download a single missing file via rsync."""

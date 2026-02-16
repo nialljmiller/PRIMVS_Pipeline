@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from primvs_api import PrimvsCatalog
+from primvs_pipeline.primvs_api import PrimvsCatalog
 
 # Configuration
 LOCAL_BASE = "/media/bigdata/PRIMVS/light_curves/"
