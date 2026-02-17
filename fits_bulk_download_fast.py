@@ -38,9 +38,15 @@ def sid_to_relpath(sid) -> str:
     return f"{s[:3]}/{s[3:6]}/{s}.csv"
 
 
-def local_exists(sid) -> bool:
-    s = str(int(sid))
-    return os.path.isfile(os.path.join(LOCAL_BASE, s[:3], s[3:6], f"{s}.csv"))
+def scan_existing_sids(base_dir: str) -> set:
+    """Walk the directory tree once and return a set of source IDs already on disk."""
+    existing = set()
+    base = Path(base_dir)
+    if not base.exists():
+        return existing
+    for csv_file in base.rglob("*.csv"):
+        existing.add(csv_file.stem)  # filename without .csv extension
+    return existing
 
 
 def rsync_prefix(prefix: str, relpaths: list, tmpdir: str, dry_run: bool = False) -> dict:
@@ -116,17 +122,22 @@ def main():
     print(f"  Total source IDs: {total:,}")
 
     # ── 2. Identify missing files ──────────────────────────────────────────
-    print("Checking local filesystem for existing files...")
+    print("Scanning local filesystem for existing files...")
     t0 = time.time()
+    existing_sids = scan_existing_sids(LOCAL_BASE)
+    scan_time = time.time() - t0
+    print(f"  Found {len(existing_sids):,} existing files in {scan_time:.1f}s")
+
     missing_by_prefix = defaultdict(list)
     already_exist = 0
 
     for sid in source_ids:
-        if local_exists(sid):
+        s = str(int(sid))
+        if s in existing_sids:
             already_exist += 1
         else:
             relpath = sid_to_relpath(sid)
-            prefix = relpath.split("/")[0]  # top-level dir, e.g. "512"
+            prefix = relpath.split("/")[0]
             missing_by_prefix[prefix].append(relpath)
 
     n_missing = sum(len(v) for v in missing_by_prefix.values())
@@ -200,7 +211,8 @@ def main():
     # ── 5. Verify ──────────────────────────────────────────────────────────
     if not args.dry_run:
         print("\nVerifying...")
-        still_missing = sum(1 for sid in source_ids if not local_exists(sid))
+        existing_after = scan_existing_sids(LOCAL_BASE)
+        still_missing = sum(1 for sid in source_ids if str(int(sid)) not in existing_after)
         if still_missing:
             print(f"  WARNING: Still missing {still_missing:,} files")
         else:
