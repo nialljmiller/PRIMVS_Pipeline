@@ -1,9 +1,10 @@
 """
-Process a chunk of the PRIMVS catalog with row-by-row CSV append.
+Process a chunk of the PRIMVS catalog with parallel processing and
+row-by-row CSV append.
 
-Each source is written to the output CSV immediately upon completion,
-matching the original PRIMVS pipeline behavior (PRIMVS_file.py).
-This ensures partial results are saved even if the job is killed.
+Each batch of sources is processed in parallel using joblib, then
+results are appended to the output CSV. This ensures partial results
+are saved even if the job is killed, while utilising all available cores.
 
 Output columns match PRIMVS_FULL.fits exactly (102 columns):
     uniqueid, sourceid, mag_n, ..., Cody_Q_gp
@@ -18,10 +19,12 @@ import argparse
 import csv
 import os
 import sys
+import time as pytime
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from astropy.table import Table
+from joblib import Parallel, delayed
 
 from primvs_pipeline.config import load_config, get_data_paths, get_processing_params
 from primvs_pipeline.data_access import ViracInterface
@@ -134,8 +137,10 @@ def run_ls(mag, magerr, time):
             r[f'ls_peak_width_{i}'] = pk['width']
         for i, qn in enumerate(['ls_q001','ls_q01','ls_q1','ls_q25','ls_q50','ls_q75','ls_q99','ls_q999','ls_q9999']):
             r[qn] = qs[i]
+        r['_ls_ok'] = True
     except Exception as e:
-        print(f"  LS failed: {e}", file=sys.stderr)
+        r['_ls_ok'] = False
+        r['_ls_err'] = str(e)
     return r
 
 
@@ -153,8 +158,10 @@ def run_pdm(mag, magerr, time):
             r[f'pdm_peak_width_{i}'] = pk['width']
         for i, qn in enumerate(['pdm_q001','pdm_q01','pdm_q1','pdm_q25','pdm_q50','pdm_q75','pdm_q99','pdm_q999','pdm_q9999']):
             r[qn] = qs[i]
+        r['_pdm_ok'] = True
     except Exception as e:
-        print(f"  PDM failed: {e}", file=sys.stderr)
+        r['_pdm_ok'] = False
+        r['_pdm_err'] = str(e)
     return r
 
 
@@ -172,8 +179,10 @@ def run_ce(mag, magerr, time):
             r[f'ce_peak_width_{i}'] = pk['width']
         for i, qn in enumerate(['ce_q001','ce_q01','ce_q1','ce_q25','ce_q50','ce_q75','ce_q99','ce_q999','ce_q9999']):
             r[qn] = qs[i]
+        r['_ce_ok'] = True
     except Exception as e:
-        print(f"  CE failed: {e}", file=sys.stderr)
+        r['_ce_ok'] = False
+        r['_ce_err'] = str(e)
     return r
 
 
@@ -185,8 +194,10 @@ def run_gp(mag, magerr, time):
         r['gp_b']      = gp.get('b', np.nan)
         r['gp_c']      = gp.get('c', np.nan)
         r['gp_p']      = gp.get('period', np.nan)
+        r['_gp_ok'] = True
     except Exception as e:
-        print(f"  GP failed: {e}", file=sys.stderr)
+        r['_gp_ok'] = False
+        r['_gp_err'] = str(e)
     return r
 
 
@@ -258,33 +269,73 @@ def compute_fap_and_select_best(row, fap_calc, mag, time):
 
 
 # ---------------------------------------------------------------------------
-# Single-source processing
+# Single-source processing (runs in worker processes)
 # ---------------------------------------------------------------------------
 
-def process_single_source(source_id, virac, quality_filter, feature_calc, fap_calc, min_obs=40):
+def process_single_source(source_id, lc_dir, quality_kwargs, fap_config_dict, min_obs=40):
     """
     Process one source through the full pipeline.
     Returns a dict keyed by COL_NAMES, or None on failure.
+
+    NOTE: Each worker re-instantiates lightweight components to avoid
+    pickling issues with joblib. The heavy objects (ViracInterface,
+    QualityFilter, FeatureCalculator) are cheap to construct.
     """
+    t0 = pytime.time()
     row = {c: np.nan for c in COL_NAMES}
     row['sourceid'] = int(source_id)
-    row['uniqueid'] = 0              # placeholder, set after FAP
+    row['uniqueid'] = 0
     row['true_class'] = ''
     row['best_method'] = ''
     row['trans_flag'] = 0.0
 
+    # Diagnostic metadata (stripped before CSV write)
+    diag = {
+        'sourceid': int(source_id),
+        'status': 'unknown',
+        'n_obs_raw': 0,
+        'n_obs_filtered': 0,
+        'methods': {'ls': None, 'pdm': None, 'ce': None, 'gp': None},
+        'best_period': np.nan,
+        'best_fap': np.nan,
+        'best_method': '',
+        'elapsed_s': 0.0,
+        'error': None,
+    }
+
     try:
+        # Reconstruct lightweight components in worker
+        virac = ViracInterface(lc_dir=lc_dir)
+        quality_filter = QualityFilter(**quality_kwargs)
+        feature_calc = FeatureCalculator()
+
+        fap_calc = None
+        fap_model_path = fap_config_dict.get('model_path', '')
+        if fap_model_path and Path(fap_model_path).exists() and FAP_AVAILABLE:
+            try:
+                fap_calc = NeuralNetworkFAP(
+                    model_path=fap_model_path,
+                    n_points=fap_config_dict.get('n_points', 200),
+                    knn_neighbors=fap_config_dict.get('knn_neighbors', 10),
+                )
+            except Exception:
+                pass
+
         # 1. Load lightcurve
         lc = virac.get_lightcurve(source_id, filter_band='Ks')
+        diag['n_obs_raw'] = len(lc.get('mag', []))
 
         # 2. Quality filter
         flc = quality_filter.apply(lc)
         mag    = flc['mag']
         magerr = flc['magerr']
         time   = flc['time']
+        diag['n_obs_filtered'] = len(mag)
 
         if len(mag) < min_obs:
-            return None
+            diag['status'] = 'skipped_too_few_obs'
+            diag['elapsed_s'] = pytime.time() - t0
+            return None, diag
 
         # 3. Statistical features
         feat = feature_calc.calculate_all(mag, magerr, time)
@@ -299,15 +350,26 @@ def process_single_source(source_id, virac, quality_filter, feature_calc, fap_ca
 
         # 4. Periodograms
         if PERIODOGRAMS_AVAILABLE:
-            row.update(run_ls(mag, magerr, time))
-            row.update(run_pdm(mag, magerr, time))
-            row.update(run_ce(mag, magerr, time))
-            row.update(run_gp(mag, magerr, time))
+            ls_res = run_ls(mag, magerr, time)
+            diag['methods']['ls'] = 'ok' if ls_res.pop('_ls_ok', False) else ls_res.pop('_ls_err', 'fail')
+            row.update(ls_res)
+
+            pdm_res = run_pdm(mag, magerr, time)
+            diag['methods']['pdm'] = 'ok' if pdm_res.pop('_pdm_ok', False) else pdm_res.pop('_pdm_err', 'fail')
+            row.update(pdm_res)
+
+            ce_res = run_ce(mag, magerr, time)
+            diag['methods']['ce'] = 'ok' if ce_res.pop('_ce_ok', False) else ce_res.pop('_ce_err', 'fail')
+            row.update(ce_res)
+
+            gp_res = run_gp(mag, magerr, time)
+            diag['methods']['gp'] = 'ok' if gp_res.pop('_gp_ok', False) else gp_res.pop('_gp_err', 'fail')
+            row.update(gp_res)
 
         # 5. FAP + best period
         row = compute_fap_and_select_best(row, fap_calc, mag, time)
 
-        # 6. Generate PRIMVS ID (uniqueid)
+        # 6. Generate PRIMVS ID
         true_period = row.get('true_period', 0.0)
         best_fap    = row.get('best_fap', 1.0)
         if np.isnan(true_period):
@@ -316,13 +378,22 @@ def process_single_source(source_id, virac, quality_filter, feature_calc, fap_ca
             best_fap = 1.0
         row['uniqueid'] = generate_primvs_id(source_id, true_period, best_fap)
 
-        return row
+        diag['status'] = 'success'
+        diag['best_period'] = row['true_period']
+        diag['best_fap'] = row['best_fap']
+        diag['best_method'] = row['best_method']
+        diag['elapsed_s'] = pytime.time() - t0
+        return row, diag
 
     except FileNotFoundError:
-        return None
+        diag['status'] = 'no_lightcurve'
+        diag['elapsed_s'] = pytime.time() - t0
+        return None, diag
     except Exception as e:
-        print(f"  Error processing {source_id}: {e}", file=sys.stderr)
-        return None
+        diag['status'] = 'error'
+        diag['error'] = str(e)
+        diag['elapsed_s'] = pytime.time() - t0
+        return None, diag
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +442,76 @@ def csv_to_fits(csv_path, fits_path):
 
 
 # ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
+
+def format_eta(seconds):
+    """Format seconds into human-readable string."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    elif seconds < 3600:
+        return f"{seconds / 60:.1f}m"
+    else:
+        return f"{seconds / 3600:.1f}h"
+
+
+def print_batch_summary(batch_diags, batch_num, total_batches,
+                        cum_success, cum_fail, cum_skip, cum_total, job_t0):
+    """Print a detailed summary after each parallel batch completes."""
+    elapsed = pytime.time() - job_t0
+    rate = cum_total / elapsed if elapsed > 0 else 0
+    remaining = (total_batches - batch_num) * (elapsed / batch_num) if batch_num > 0 else 0
+
+    # Per-batch breakdown
+    b_success = sum(1 for d in batch_diags if d['status'] == 'success')
+    b_skip = sum(1 for d in batch_diags if d['status'] in ('skipped_too_few_obs', 'no_lightcurve'))
+    b_fail = sum(1 for d in batch_diags if d['status'] == 'error')
+    b_times = [d['elapsed_s'] for d in batch_diags]
+    avg_time = np.mean(b_times) if b_times else 0
+
+    # Method success rates for this batch
+    method_counts = {'ls': 0, 'pdm': 0, 'ce': 0, 'gp': 0}
+    method_ok = {'ls': 0, 'pdm': 0, 'ce': 0, 'gp': 0}
+    for d in batch_diags:
+        if d['status'] == 'success':
+            for m in ['ls', 'pdm', 'ce', 'gp']:
+                method_counts[m] += 1
+                if d['methods'][m] == 'ok':
+                    method_ok[m] += 1
+
+    sep = "-" * 72
+    print(sep)
+    print(f"  BATCH {batch_num}/{total_batches}  |  "
+          f"Elapsed: {format_eta(elapsed)}  |  "
+          f"ETA: {format_eta(remaining)}  |  "
+          f"Rate: {rate:.1f} src/s")
+    print(f"  This batch:  {b_success} ok / {b_skip} skipped / {b_fail} errors  "
+          f"(avg {avg_time:.2f}s/source)")
+    print(f"  Cumulative:  {cum_success} ok / {cum_skip} skipped / {cum_fail} errors  "
+          f"({cum_total} total)")
+
+    if sum(method_counts.values()) > 0:
+        method_str = "  Methods:    "
+        for m in ['ls', 'pdm', 'ce', 'gp']:
+            if method_counts[m] > 0:
+                pct = 100 * method_ok[m] / method_counts[m]
+                method_str += f" {m.upper()}={pct:.0f}%"
+            else:
+                method_str += f" {m.upper()}=n/a"
+        print(method_str)
+
+    # Report any errors
+    errors = [(d['sourceid'], d['error']) for d in batch_diags if d['status'] == 'error']
+    if errors:
+        print(f"  Errors ({len(errors)}):")
+        for sid, err in errors[:5]:
+            print(f"    sourceid {sid}: {err}")
+        if len(errors) > 5:
+            print(f"    ... and {len(errors) - 5} more")
+    print(sep, flush=True)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -383,9 +524,21 @@ def main():
     parser.add_argument("--count", type=int, default=1000,
                         help="Number of sources to process")
     parser.add_argument("--output", type=str, required=True,
-                        help="Output name (writes output/<name>.csv and output/<name>.fits)")
+                        help="Output name (writes output/<n>.csv and output/<n>.fits)")
     parser.add_argument("--config", type=str, default="../config/pipeline_config.yaml")
+    parser.add_argument("--workers", type=int, default=0,
+                        help="Number of parallel workers (0 = use all available CPUs)")
+    parser.add_argument("--batch-size", type=int, default=0,
+                        help="Sources per parallel batch (0 = auto, workers * 2)")
     args = parser.parse_args()
+
+    n_workers = args.workers if args.workers > 0 else os.cpu_count()
+    batch_size = args.batch_size if args.batch_size > 0 else n_workers * 2
+
+    print("=" * 72)
+    print(f"  PRIMVS Chunk Processor")
+    print(f"  Workers: {n_workers}  |  Batch size: {batch_size}")
+    print("=" * 72, flush=True)
 
     # --- Config ---
     config = load_config(args.config)
@@ -395,39 +548,30 @@ def main():
     fap_config = config.get('fap', {})
     min_obs = quality_config.get('min_observations', 40)
 
-    # --- Components ---
-    virac = ViracInterface(lc_dir=str(paths['virac_lightcurves']))
+    # Serialisable kwargs for workers (avoid pickling complex objects)
+    lc_dir = str(paths['virac_lightcurves'])
+    quality_kwargs = {
+        'max_chi': quality_config.get('max_chi', 10.0),
+        'max_ast_res_chisq': quality_config.get('max_ast_res_chisq', 20.0),
+        'max_magerr_sigma': quality_config.get('max_magerr_sigma', 4.0),
+        'require_positive_mag': quality_config.get('require_positive_mag', True),
+        'require_positive_magerr': quality_config.get('require_positive_magerr', True),
+    }
+    fap_config_dict = dict(fap_config)
 
-    quality_filter = QualityFilter(
-        max_chi=quality_config.get('max_chi', 10.0),
-        max_ast_res_chisq=quality_config.get('max_ast_res_chisq', 20.0),
-        max_magerr_sigma=quality_config.get('max_magerr_sigma', 4.0),
-        require_positive_mag=quality_config.get('require_positive_mag', True),
-        require_positive_magerr=quality_config.get('require_positive_magerr', True),
-    )
-
-    feature_calc = FeatureCalculator()
-
-    fap_calc = None
-    fap_model_path = fap_config.get('model_path', '')
-    if fap_model_path and Path(fap_model_path).exists() and FAP_AVAILABLE:
-        try:
-            fap_calc = NeuralNetworkFAP(
-                model_path=fap_model_path,
-                n_points=fap_config.get('n_points', 200),
-                knn_neighbors=fap_config.get('knn_neighbors', 10),
-            )
-            print(f"FAP calculator loaded from {fap_model_path}")
-        except Exception as e:
-            print(f"WARNING: FAP calculator failed to load: {e}", file=sys.stderr)
+    print(f"Lightcurve dir: {lc_dir}")
+    print(f"Quality filter: min_obs={min_obs}, max_chi={quality_kwargs['max_chi']}")
+    print(f"Periodograms available: {PERIODOGRAMS_AVAILABLE}")
+    print(f"FAP available: {FAP_AVAILABLE}")
+    print(f"Cody_Q available: {CODY_Q_AVAILABLE}")
 
     # --- Read FITS chunk ---
-    print(f"Reading FITS table from {args.fits}...")
+    print(f"\nReading FITS table from {args.fits}...")
     tbl = Table.read(args.fits, hdu=1)
     end_idx = min(args.start + args.count, len(tbl))
     chunk = tbl[args.start:end_idx]
     source_ids = chunk['sourceid'].data.tolist()
-    print(f"Processing {len(source_ids)} sources (indices {args.start} to {end_idx - 1})...")
+    print(f"Loaded {len(source_ids)} sources (indices {args.start} to {end_idx - 1})")
 
     # --- Output paths ---
     output_dir = Path('output')
@@ -437,35 +581,74 @@ def main():
 
     write_header = not csv_path.exists() or csv_path.stat().st_size == 0
 
-    # --- Process sources one at a time, append CSV immediately ---
-    n_success = 0
+    # --- Process in parallel batches ---
     n_total = len(source_ids)
+    n_batches = (n_total + batch_size - 1) // batch_size
+    cum_success = 0
+    cum_fail = 0
+    cum_skip = 0
+    job_t0 = pytime.time()
 
-    for i, sid in enumerate(source_ids):
-        result = process_single_source(sid, virac, quality_filter, feature_calc, fap_calc, min_obs)
+    print(f"\nProcessing {n_total} sources in {n_batches} batches of ~{batch_size}...")
+    print(flush=True)
 
-        if result is not None:
-            csv_row = [result.get(c, '') for c in COL_NAMES]
+    for batch_idx in range(n_batches):
+        b_start = batch_idx * batch_size
+        b_end = min(b_start + batch_size, n_total)
+        batch_sids = source_ids[b_start:b_end]
 
+        # Run batch in parallel
+        results = Parallel(n_jobs=n_workers, prefer="processes")(
+            delayed(process_single_source)(
+                sid, lc_dir, quality_kwargs, fap_config_dict, min_obs
+            )
+            for sid in batch_sids
+        )
+
+        # Collect results and append to CSV
+        batch_diags = []
+        batch_rows = []
+        for row, diag in results:
+            batch_diags.append(diag)
+            if row is not None:
+                batch_rows.append(row)
+                cum_success += 1
+            elif diag['status'] == 'error':
+                cum_fail += 1
+            else:
+                cum_skip += 1
+
+        # Write batch to CSV
+        if batch_rows:
             with open(csv_path, 'a', newline='') as f:
                 writer = csv.writer(f)
                 if write_header:
                     writer.writerow(COL_NAMES)
                     write_header = False
-                writer.writerow(csv_row)
+                for row in batch_rows:
+                    writer.writerow([row.get(c, '') for c in COL_NAMES])
 
-            n_success += 1
+        cum_total = cum_success + cum_fail + cum_skip
+        print_batch_summary(
+            batch_diags, batch_idx + 1, n_batches,
+            cum_success, cum_fail, cum_skip, cum_total, job_t0
+        )
 
-        if (i + 1) % 100 == 0 or (i + 1) == n_total:
-            print(f"  Progress: {i + 1}/{n_total} sources, {n_success} successful")
-
-    print(f"\nCSV done: {n_success}/{n_total} sources written to {csv_path}")
+    # --- Final summary ---
+    total_elapsed = pytime.time() - job_t0
+    print(f"\n{'=' * 72}")
+    print(f"  COMPLETE")
+    print(f"  Total time: {format_eta(total_elapsed)}")
+    print(f"  Sources: {cum_success} successful / {cum_skip} skipped / {cum_fail} errors")
+    print(f"  Avg rate: {(cum_success + cum_fail + cum_skip) / total_elapsed:.1f} sources/sec")
+    print(f"  CSV: {csv_path}")
 
     # --- Write FITS from the completed CSV ---
-    if n_success > 0 and csv_path.exists():
+    if cum_success > 0 and csv_path.exists():
         csv_to_fits(str(csv_path), str(fits_path))
+        print(f"  FITS: {fits_path}")
 
-    print("Complete.")
+    print(f"{'=' * 72}")
 
 
 if __name__ == "__main__":
