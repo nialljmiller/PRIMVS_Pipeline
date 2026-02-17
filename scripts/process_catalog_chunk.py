@@ -64,7 +64,7 @@ def generate_primvs_id(sourceid, true_period, best_fap):
                             + '{:0>2d}'.format(int(fap * 100))
     """
     sourceid_str = str(int(sourceid))
-    sourceid_trimmed = sourceid_str[:-2]
+    sourceid_trimmed = sourceid_str[:-4]
     period_code = '{:0>3d}'.format(int(float(true_period) * 1000))
     fap_code = '{:0>2d}'.format(int(float(best_fap) * 100))
     return int(sourceid_trimmed + period_code + fap_code)
